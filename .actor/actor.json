@@ -5,6 +5,5 @@
     "description": "Deep research on housing info using OpenRouter and Playwright.",
     "version": "0.1",
     "dockerfile": "../Dockerfile",
-    "input": "./input_schema.json",
     "input": "./input_schema.json"
 }

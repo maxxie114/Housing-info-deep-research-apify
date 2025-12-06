@@ -4,10 +4,11 @@
     "schemaVersion": 1,
     "properties": {
         "query": {
-            "title": "Query",
+            "title": "Building Task",
             "type": "string",
-            "description": "The research query (e.g., 'Find stair requirements for Class 1 building').",
-            "editor": "textfield"
+            "description": "The specific task or question about building codes (e.g. 'Find single house building requirements in Antioch, CA').",
+            "editor": "textarea",
+            "example": "Find single house building requirements in Antioch, CA."
         },
         "modelName": {
             "title": "Model Name",

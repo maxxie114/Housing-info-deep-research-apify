@@ -9,11 +9,10 @@ from playwright.async_api import async_playwright
 from openai import OpenAI
 from apify import Actor
 
-from src.models import BCARequirementReport, BCARequirement
+from src.models import BuildingCodeReport, BuildingCodeRequirement
 
-# OpenAI client
-# Ensure OPENAI_API_KEY is available in the environment
-# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  <-- Moved to lazy init
+# OpenAI client initialization (lazy)
+# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 ALLOWED_ACTIONS = """
 You may ONLY respond with exactly ONE of the following actions (no explanation):
@@ -25,27 +24,26 @@ FINISH
 """
 
 AGENT_SYSTEM_PROMPT = f"""
-You are an autonomous web agent that navigates the National Construction Code (NCC)
-/ Building Code of Australia (BCA) website at https://ncc.abcb.gov.au/.
+You are an autonomous web agent tasked with researching building codes and zoning requirements.
+Your goal is to navigate the building code website to find specific requirements matching the user's task.
 
 Your job is to:
 1. Read the current rendered HTML of the page.
 2. Decide the best next action to move towards answering the user's building code task.
-3. Determine which NCC Volume / Part / Clause is relevant.
+3. Determine which Volume / Part / Chapter / Section is relevant.
 4. When you have reached a page that contains the key code requirements, issue EXTRACT.
 5. If you are truly finished and have nothing more to extract, issue FINISH.
 
 You control a headless browser that can:
 - NAVIGATE <url>  (go to an absolute or relative URL)
 - CLICK <selector> (click a link/button/etc. using Playwright selector syntax)
-- EXTRACT         (tell the controller to return the current HTML)
+- EXTRACT         (tell the controller to return the current HTML and screenshot)
 - FINISH          (stop the agent loop)
 
 Rules:
-- Stay within ncc.abcb.gov.au.
-- Prefer NAVIGATE for obvious URLs (e.g. direct links to volumes, parts).
+- You are NOT restricted to a single domain, but stay on relevant building code sites (e.g. UpCodes, Municode, city/state portals).
+- Prefer NAVIGATE for obvious URLs (e.g. direct links to chapters).
 - Use CLICK when you need to expand menus, open parts/chapters, or follow links.
-- When in doubt, first navigate to NCC 2022 and the correct volume based on the task.
 - Think step-by-step, but DO NOT output your thinking, only actions.
 
 {ALLOWED_ACTIONS}
@@ -92,10 +90,7 @@ class WebScraperActor:
 
     async def click(self, selector: str) -> str:
         """
-        selector can be any Playwright selector, e.g.:
-        - 'text="Volume Two"'
-        - 'a[href*="volume-two"]'
-        - 'role=link[name="Volume Two"i]'
+        selector can be any Playwright selector.
         """
         await self.init_browser()
         try:
@@ -137,24 +132,22 @@ class WebScraperActor:
 async def llm_choose_action(current_html: str, history: List[str], user_task: str) -> str:
     """
     Ask gpt-4o-mini to choose the next agent action.
-    Returns a string like:
-      - 'NAVIGATE https://ncc.abcb.gov.au/...'
-      - 'CLICK text="Volume Two"'
-      - 'EXTRACT'
-      - 'FINISH'
     """
     html_snippet = current_html[:8000]  # keep it within reasonable token budget
     history_text = "\n".join(history[-10:])  # last 10 actions
+    
+    from apify import Configuration
+    token = Configuration.get_global_configuration().token
 
     client = OpenAI(
         base_url="https://openrouter.apify.actor/api/v1",
         api_key="no-key-required-but-must-not-be-empty",
-        default_headers={"Authorization": f"Bearer {os.getenv('APIFY_TOKEN')}"}
+        default_headers={"Authorization": f"Bearer {token}"}
     )
 
     try:
         resp = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4o-mini",
             temperature=0.1,
             messages=[
                 {"role": "system", "content": AGENT_SYSTEM_PROMPT},
@@ -176,15 +169,56 @@ async def llm_choose_action(current_html: str, history: List[str], user_task: st
         return "FINISH"
 
 
-async def ncc_bca_agent_get_html(user_task: str, max_steps: int = 10) -> Tuple[str, bytes]:
+async def search_for_start_url(user_task: str) -> str:
+    """
+    Uses apify/rag-web-browser to search key terms and find a good starting URL.
+    Returns the URL of the first organic result.
+    """
+    Actor.log.info(f"Searching for starting URL for task: {user_task}")
+    
+    # Construct a search query that explicitly asks for the code location
+    search_query = f"{user_task} building code official site"
+    
+    try:
+        # Call apify/rag-web-browser
+        run = await Actor.call(
+            "apify/rag-web-browser",
+            run_input={
+                "query": search_query,
+                "maxResults": 1,
+            }
+        )
+        
+        # Get the default dataset items
+        if run:
+            dataset_id = run.get("defaultDatasetId")
+            if dataset_id:
+                items = await Actor.apify_client.dataset(dataset_id).list_items()
+                if items.items:
+                    first_result = items.items[0]
+                    start_url = first_result.get("metadata", {}).get("url")
+                    if start_url:
+                        Actor.log.info(f"Found starting URL: {start_url}")
+                        return start_url
+        
+        Actor.log.warning("No URL found via search. Defaulting to Google.")
+        return "https://www.google.com/search?q=" + user_task.replace(" ", "+")
+        
+    except Exception as e:
+        Actor.log.error(f"Search failed: {e}. Defaulting to Google.")
+        return "https://www.google.com/search?q=" + user_task.replace(" ", "+")
+
+async def research_agent_get_html(user_task: str, max_steps: int = 10) -> Tuple[str, bytes]:
     """
     Agentic loop:
-    - Starts at NCC homepage
-    - Lets the LLM decide actions
-    - Returns the final extracted HTML (from EXTRACT or FINISH) and a screenshot.
+    1. Search for a good starting point.
+    2. Lets the LLM decide actions to navigate/extract.
+    3. Returns the final extracted HTML and screenshot.
     """
     scraper = WebScraperActor()
-    start_url = "https://ncc.abcb.gov.au/"
+    
+    # Dynamic start URL based on search
+    start_url = await search_for_start_url(user_task)
 
     # initial page
     html = await scraper.goto(start_url)
@@ -201,14 +235,17 @@ async def ncc_bca_agent_get_html(user_task: str, max_steps: int = 10) -> Tuple[s
             upper = action.upper().strip()
 
             if upper.startswith("NAVIGATE "):
-                # Extract URL after 'NAVIGATE '
                 raw_url = action[len("NAVIGATE "):].strip()
                 if not raw_url.startswith("http"):
-                    # handle relative paths
-                    if raw_url.startswith("/"):
-                        raw_url = "https://ncc.abcb.gov.au" + raw_url
-                    else:
-                        raw_url = "https://ncc.abcb.gov.au/" + raw_url
+                    # Attempt to handle relative paths blindly if we know the base, 
+                    # but pure relative handling is hard without current URL context.
+                    # For now, we assume the LLM sees the links and provides full or resolvable URLs.
+                    # If it's a root relative path:
+                    if raw_url.startswith("/") and scraper.page:
+                        # naive reconstruct
+                        base = "/".join(scraper.page.url.split("/")[:3]) # https://host
+                        raw_url = base + raw_url
+                
                 Actor.log.info(f"Navigating to: {raw_url}")
                 html = await scraper.goto(raw_url)
                 continue
@@ -229,89 +266,85 @@ async def ncc_bca_agent_get_html(user_task: str, max_steps: int = 10) -> Tuple[s
                 Actor.log.info("Agent indicated FINISH. Returning current HTML and a blank screenshot.")
                 return html, b''
 
-            # Fallback: unknown action, stop to avoid infinite loop
-            Actor.log.warning("Unknown action. Stopping agent loop. Returning current HTML and a blank screenshot.")
+            # Fallback: unknown action
+            Actor.log.warning("Unknown action or FINISH. Returning current HTML.")
             return html, b''
 
-        Actor.log.warning("Max steps reached. Returning current HTML and a blank screenshot.")
+        Actor.log.warning("Max steps reached. Returning current HTML.")
         return html, b''
 
     finally:
         await scraper.close()
 
-def summarize_bca_requirements(html: str, user_task: str) -> BCARequirementReport:
+def summarize_requirements(html: str, user_task: str) -> BuildingCodeReport:
     """
-    Takes the final NCC HTML retrieved by the agent and returns
-    a structured BCARequirementReport using gpt-4o-mini.
+    Takes the final HTML retrieved by the agent and returns
+    a structured BuildingCodeReport using gpt-4o-mini.
     """
     html_snippet = html[:15000]  # keep under token limits
 
     system_prompt = """
-You are an expert in the National Construction Code (NCC) / Building Code of Australia (BCA).
+You are an expert in building codes and zoning regulations.
 
 You will be given:
-- The user's task (e.g. "Find stair and balustrade requirements for a new Class 1 dwelling").
-- The HTML of one or more NCC/BCA clause pages, as plain text.
+- The user's task (e.g. "Find parking requirements for an ADU in Los Angeles").
+- The HTML of a relevant building code page.
 
 Your job:
-- Identify the key code requirements that are relevant to the user’s task,
-focusing on new construction (not only existing building exceptions).
-- Use the NCC 2022 edition as your default assumption unless the text clearly
-indicates a different edition.
+- Identify the key code requirements relevant to the task.
 - Summarise the requirements in clear, non-legal language.
+- Extract generic code references (Section, Chapter, Table numbers).
 
 You MUST:
-- Fill the BCARequirementReport schema.
-- Provide concise requirement statements (not entire clause text).
-- Include code references where visible (e.g. "NCC 2022 Vol 2 Part 3.9.1").
-- List any important assumptions you made (e.g. building class, volume).
-
-This is informational guidance only, not legal advice.
+- Fill the BuildingCodeReport schema.
+- Provide concise requirement statements.
+- List any important assumptions (e.g. jurisdiction, year of code).
 """
 
     user_prompt = f"""
 User task:
 {user_task}
 
-NCC/BCA HTML (truncated plain text):
+HTML Content (truncated):
 \"\"\"{html_snippet}\"\"\"
 """
+    
+    from apify import Configuration
+    token = Configuration.get_global_configuration().token
 
     client = OpenAI(
         base_url="https://openrouter.apify.actor/api/v1",
         api_key="no-key-required-but-must-not-be-empty",
-        default_headers={"Authorization": f"Bearer {os.getenv('APIFY_TOKEN')}"}
+        default_headers={"Authorization": f"Bearer {token}"}
     )
 
     try:
         completion = client.beta.chat.completions.parse(
-            model="gpt-4o-mini-2024-07-18",
+            model="gpt-4o-mini",
             temperature=0.2,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            response_format=BCARequirementReport,
+            response_format=BuildingCodeReport,
         )
         return completion.choices[0].message.parsed
     except Exception as e:
         Actor.log.error(f"Error in summarization: {e}")
-        # Return empty report on failure
-        return BCARequirementReport(
+        return BuildingCodeReport(
             task=user_task,
-            assumed_location="Error",
-            assumed_volume=None,
-            assumptions=[],
+            jurisdiction="Unknown",
+            code_source="Error",
+            assumptions=["Failed to summarize"],
             requirements=[]
         )
 
-async def run_bca_ncc_agent(user_task: str, max_steps: int = 10) -> BCARequirementReport:
+async def run_research_agent(user_task: str, max_steps: int = 15) -> BuildingCodeReport:
     """
-    High-level helper:
-    1) Run the NCC agent to navigate and extract relevant HTML.
-    2) Summarise that HTML into a structured BCARequirementReport.
+    High-level entry:
+    1) Run the research agent (Search -> Navigate -> Extract).
+    2) Summarise extracted HTML into a BuildingCodeReport.
     """
-    html, screenshot_data = await ncc_bca_agent_get_html(user_task=user_task, max_steps=max_steps)
-    # The screenshot_data is now available if needed for further processing.
-    report = summarize_bca_requirements(html, user_task)
+    html, screenshot_data = await research_agent_get_html(user_task=user_task, max_steps=max_steps)
+    report = summarize_requirements(html, user_task)
     return report

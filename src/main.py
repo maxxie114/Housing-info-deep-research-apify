@@ -14,8 +14,7 @@ from apify import Actor
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
-from src.models import BCARequirementReport
-from src.tools import tool_research_bca
+from src.tools import tool_research_building_code
 from src.utils import log_state
 
 import os
@@ -47,7 +46,7 @@ async def main() -> None:
         if not query:
             # Fallback for testing/debugging
             Actor.log.warning('Missing "query" attribute in input. Using default test query.')
-            query = "Find stair and balustrade requirements for a new Class 1 dwelling in NCC 2022 Volume Two."
+            query = "Find single house building requirements in Antioch, CA."
         
         llm = ChatOpenAI(
             model=model_name,
@@ -58,7 +57,7 @@ async def main() -> None:
 
         # Create the ReAct agent graph
         # see https://langchain-ai.github.io/langgraph/reference/prebuilt/?h=react#langgraph.prebuilt.chat_agent_executor.create_react_agent
-        tools = [tool_research_bca]
+        tools = [tool_research_building_code]
         
         # We might want to use a more generic output format or just the report directly.
         # For now, let's keep it simple. The agent will use the tool and return the result.
