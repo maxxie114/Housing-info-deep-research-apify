@@ -1,8 +1,8 @@
 {
     "actorSpecification": 1,
-    "name": "housing-info-deep-research-apify",
-    "title": "Housing Info Deep Research",
-    "description": "Deep research on housing info using OpenRouter and Playwright.",
+    "name": "building-code-research-agent",
+    "title": "Building Code Research Agent",
+    "description": "Deep research agent for building codes and zoning requirements using OpenRouter and search.",
     "version": "0.1",
     "dockerfile": "../Dockerfile",
     "input": "./input_schema.json"

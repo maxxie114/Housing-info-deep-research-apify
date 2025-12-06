@@ -1,16 +1,26 @@
-## Python LangGraph template
+# Building Code Deep Research Agent
 
-<!-- This is an Apify template readme -->
-
-A template for [LangGraph](https://www.langchain.com/langgraph) projects in Python for building AI agents with [Apify Actors](https://apify.com/actors). The template provides a basic structure and an example [LangGraph](https://www.langchain.com/langgraph) [ReAct agent](https://react-lm.github.io/) that calls [Actors](https://apify.com/actors) as tools in a workflow.
+An AI agent designed to research building codes and zoning requirements for specific construction tasks. It uses [apify/rag-web-browser](https://apify.com/apify/rag-web-browser) to search for relevant municipal or state codes (e.g., UpCodes, Municode, city websites) and extracts specific requirements.
 
 ## How it works
 
-A [ReAct agent](https://react-lm.github.io/) is created and given a set of tools to accomplish a task. The agent receives a query from the user and decides which tools to use and in what order to complete the task. In this case, the agent is provided with an [Instagram Scraper Actor](https://apify.com/apify/instagram-scraper) to scrape Instagram profile posts and a calculator tool to sum a list of numbers to calculate the total number of likes and comments. The agent is configured to also output structured data, which is pushed to the dataset, while textual output is stored in the key-value store as a `response.txt` file.
+This agent leverages a **ReAct** (Reason+Act) architecture using **LangGraph**:
+1.  **Search**: It starts by performing a Google Search for the specific jurisdiction and building topic (e.g., "Antioch CA single family home building requirements").
+2.  **Navigate & Extract**: It navigates to the most relevant search results (official city pages, code libraries) and extracts the text.
+3.  **Analyze**: It uses an LLM (via OpenRouter) to analyze the text and extract specific requirements (setbacks, height limits, parking, etc.).
+4.  **Report**: It outputs a structured `BuildingCodeReport` containing the findings.
 
 ## How to use
 
-Add or modify the agent tools in the `src/tools.py` file, and make sure to include new tools in the agent tools list in `src/main.py`. Additionally, you can update the agent system prompt in `src/main.py`. For more information, refer to the [LangGraph ReAct agent documentation](https://langchain-ai.github.io/langgraph/how-tos/create-react-agent-system-prompt/) and the [LangChain tools documentation](https://python.langchain.com/docs/concepts/tools/).
+Input a natural language query describing your construction task and location.
+
+**Example Query:**
+`"Find single house building requirements in Antioch, CA."`
+
+The agent will output a JSON report with:
+-   **Jurisdiction**: Detected location (e.g., "Antioch, CA").
+-   **Code Source**: The document or website used (e.g., "Antioch Municipal Code").
+-   **Requirements**: A list of specific requirements found.
 
 For a more advanced multi-agent example, see the [Finance Monitoring Agent actor](https://github.com/apify/actor-finance-monitoring-agent) or visit the [LangGraph documentation](https://langchain-ai.github.io/langgraph/concepts/multi_agent/).
 
