@@ -6,7 +6,5 @@
     "version": "0.1",
     "dockerfile": "../Dockerfile",
     "input": "./input_schema.json",
-    "storages": {
-        "dataset": "../storage/datasets/default"
-    }
+    "input": "./input_schema.json"
 }
