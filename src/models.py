@@ -1,46 +1,43 @@
-"""Module defines Pydantic models for this project.
-
-These models are used mainly for the structured tool and LLM outputs.
-Resources:
-- https://docs.pydantic.dev/latest/concepts/models/
-"""
-
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import List, Optional
+from pydantic import BaseModel, Field
 
 
 class InstagramPost(BaseModel):
-    """Instagram Post Pydantic model.
-
-    Returned as a structured output by the `tool_scrape_instagram_profile_posts` tool.
-
-    url: The URL of the post.
-    likes: The number of likes on the post.
-    comments: The number of comments on the post.
-    timestamp: The timestamp when the post was published.
-    caption: The post caption.
-    alt: The post alt text.
+    """
+    Represents a single Instagram post.
     """
 
-    url: str
-    likes: int
-    comments: int
-    timestamp: str
-    caption: str | None = None
-    alt: str | None = None
-
+    url: str = Field(description='The URL of the post.')
+    likes: int = Field(description='The number of likes.')
+    comments: int = Field(description='The number of comments.')
+    timestamp: str = Field(description='The timestamp of the post.')
+    caption: str | None = Field(description='The caption of the post.')
+    alt: str | None = Field(description='The alt text of the post.')
 
 class AgentStructuredOutput(BaseModel):
-    """Structured output for the ReAct agent.
-
-    Returned as a structured output by the ReAct agent.
-
-    total_likes: The total number of likes on the most popular posts.
-    total_comments: The total number of comments on the most popular posts.
-    most_popular_posts: A list of the most popular posts.
+    """
+    The structured output from the agent.
     """
 
-    total_likes: int
-    total_comments: int
-    most_popular_posts: list[InstagramPost]
+    answer: str = Field(description='The answer to the user query.')
+    instagram_posts: list[InstagramPost] = Field(
+        description='A list of Instagram posts scraped from the profile.', default_factory=list
+    )
+
+
+class BCARequirement(BaseModel):
+    category: str                     # e.g. "Stairs", "Balustrades", "Fire separation"
+    code_reference: Optional[str]     # e.g. "NCC 2022 Vol 2 Part 3.9.1, Clause 3.9.1.1"
+    requirement: str                  # plain-language requirement
+    applicability: Optional[str]      # when/where it applies (Class, storeys, etc.)
+    notes: Optional[str] = None       # clarifications, assumptions
+
+
+class BCARequirementReport(BaseModel):
+    task: str
+    assumed_location: str             # e.g. "Australia, NCC 2022"
+    assumed_volume: Optional[str]     # "Volume One", "Volume Two", etc.
+    assumptions: List[str]            # key assumptions the model made
+    requirements: List[BCARequirement]

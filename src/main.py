@@ -14,9 +14,11 @@ from apify import Actor
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
-from src.models import AgentStructuredOutput
-from src.tools import tool_calculator_sum, tool_scrape_instagram_profile_posts
+from src.models import BCARequirementReport
+from src.tools import tool_research_bca
 from src.utils import log_state
+
+import os
 
 
 async def main() -> None:
@@ -34,34 +36,47 @@ async def main() -> None:
         await Actor.charge('actor-start')
 
         # Handle input
-        actor_input = await Actor.get_input()
+        actor_input = await Actor.get_input() or {}
 
         query = actor_input.get('query')
         model_name = actor_input.get('modelName', 'gpt-4o-mini')
+        
         if actor_input.get('debug', False):
             Actor.log.setLevel(logging.DEBUG)
+        
         if not query:
-            msg = 'Missing "query" attribute in input!'
-            raise ValueError(msg)
-
-        llm = ChatOpenAI(model=model_name)
+            # Fallback for testing/debugging
+            Actor.log.warning('Missing "query" attribute in input. Using default test query.')
+            query = "Find stair and balustrade requirements for a new Class 1 dwelling in NCC 2022 Volume Two."
+        
+        llm = ChatOpenAI(
+            model=model_name,
+            base_url="https://openrouter.apify.actor/api/v1",
+            api_key="no-key-required-but-must-not-be-empty",
+            default_headers={"Authorization": f"Bearer {os.getenv('APIFY_TOKEN')}"}
+        )
 
         # Create the ReAct agent graph
         # see https://langchain-ai.github.io/langgraph/reference/prebuilt/?h=react#langgraph.prebuilt.chat_agent_executor.create_react_agent
-        tools = [tool_calculator_sum, tool_scrape_instagram_profile_posts]
-        graph = create_react_agent(llm, tools, response_format=AgentStructuredOutput)
+        tools = [tool_research_bca]
+        
+        # We might want to use a more generic output format or just the report directly.
+        # For now, let's keep it simple. The agent will use the tool and return the result.
+        # Since the tool returns a complex object (BCARequirementReport), we need to ensure the agent can handle it.
+        # Ideally, the agent should just return the result of the tool call if it answers the query.
+        
+        graph = create_react_agent(llm, tools)
 
         inputs: dict = {'messages': [('user', query)]}
-        response: AgentStructuredOutput | None = None
-        last_message: str | None = None
+        response_messages = []
+        
         async for state in graph.astream(inputs, stream_mode='values'):
             log_state(state)
-            if 'structured_response' in state:
-                response = state['structured_response']
-                last_message = state['messages'][-1].content
-                break
+            response_messages = state['messages']
 
-        if not response or not last_message:
+        last_message = response_messages[-1]
+        
+        if not last_message or not last_message.content:
             Actor.log.error('Failed to get a response from the ReAct agent!')
             await Actor.fail(status_message='Failed to get a response from the ReAct agent!')
             return
@@ -71,13 +86,17 @@ async def main() -> None:
 
         # Push results to the key-value store and dataset
         store = await Actor.open_key_value_store()
-        await store.set_value('response.txt', last_message)
+        
+        # Try to find the actual tool output if possible, otherwise use the final message
+        final_answer = last_message.content
+        
+        await store.set_value('response.txt', str(final_answer))
         Actor.log.info('Saved the "response.txt" file into the key-value store!')
 
         await Actor.push_data(
             {
-                'response': last_message,
-                'structured_response': response.dict() if response else {},
+                'response': str(final_answer),
+                'query': query,
             }
         )
-        Actor.log.info('Pushed the into the dataset!')
+        Actor.log.info('Pushed the data into the dataset!')
