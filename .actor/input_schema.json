@@ -1,0 +1,29 @@
+{
+    "title": "Input Schema",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "query": {
+            "title": "Query",
+            "type": "string",
+            "description": "The research query (e.g., 'Find stair requirements for Class 1 building').",
+            "editor": "textfield"
+        },
+        "modelName": {
+            "title": "Model Name",
+            "type": "string",
+            "description": "LLM model to use (default: gpt-4o-mini).",
+            "default": "gpt-4o-mini",
+            "editor": "textfield"
+        },
+        "debug": {
+            "title": "Debug Mode",
+            "type": "boolean",
+            "description": "Enable debug logging.",
+            "default": false
+        }
+    },
+    "required": [
+        "query"
+    ]
+}
