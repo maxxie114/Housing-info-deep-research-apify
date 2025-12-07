@@ -50,84 +50,52 @@ Rules:
 """
 
 class WebScraperActor:
-    def __init__(self):
-        self.playwright = None
-        self.browser = None
-        self.page = None
+    _instance = None
+    _browser = None
+    _playwright = None
+    _lock = asyncio.Lock()
 
-    async def init_browser(self):
-        if self.playwright is None:
-            self.playwright = await async_playwright().start()
-        if self.browser is None:
-            try:
-                # Try launching with typical Apify Actor arguments
-                self.browser = await self.playwright.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--disable-dev-shm-usage",
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-gpu",
-                    ],
-                )
-            except Exception as e:
-                Actor.log.error(f"Failed to launch browser: {e}")
-                raise
+    @classmethod
+    async def get_browser(cls):
+        async with cls._lock:
+            if cls._playwright is None:
+                cls._playwright = await async_playwright().start()
+            if cls._browser is None:
+                try:
+                    cls._browser = await cls._playwright.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--disable-dev-shm-usage",
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                            "--disable-gpu",
+                        ],
+                    )
+                except Exception as e:
+                    Actor.log.error(f"Failed to launch browser: {e}")
+                    raise
+            return cls._browser
 
-        if self.page is None or self.page.is_closed():
-            self.page = await self.browser.new_page()
-
-    async def goto(self, url: str) -> str:
-        await self.init_browser()
+    @classmethod
+    async def close(cls):
         try:
-            await self.page.goto(url, wait_until="load", timeout=60000)
-            # small wait to allow dynamic content
-            await self.page.wait_for_timeout(1500)
-            return await self.page.content()
-        except Exception as e:
-            Actor.log.error(f"Error navigating to {url}: {e}")
-            return ""
-
-    async def click(self, selector: str) -> str:
-        """
-        selector can be any Playwright selector.
-        """
-        await self.init_browser()
+            if cls._browser:
+                await cls._browser.close()
+        except: pass
         try:
-            await self.page.click(selector, timeout=10000)
-            await self.page.wait_for_timeout(1500)
-            return await self.page.content()
-        except Exception as e:
-            Actor.log.error(f"Error clicking selector {selector}: {e}")
-            return await self.page.content()
+            if cls._playwright:
+                await cls._playwright.stop()
+        except: pass
+        cls._browser = None
+        cls._playwright = None
 
-    async def extract_html(self) -> str:
-        await self.init_browser()
-        return await self.page.content()
-
-    async def screenshot(self, path="page.png") -> str:
-        await self.init_browser()
-        await self.page.screenshot(path=path, full_page=True)
-        return path
-
-    async def screenshot_bytes(self) -> bytes:
-        await self.init_browser()
-        return await self.page.screenshot(full_page=True)
-
-    async def close(self):
-        try:
-            if self.browser is not None:
-                await self.browser.close()
-        except Exception:
-            pass
-        try:
-            if self.playwright is not None:
-                await self.playwright.stop()
-        except Exception:
-            pass
-        self.playwright = None
-        self.browser = None
-        self.page = None
+    @staticmethod
+    async def new_page():
+        browser = await WebScraperActor.get_browser()
+        # Create a new context for isolation if needed, or just new page
+        ctx = await browser.new_context()
+        page = await ctx.new_page()
+        return page, ctx
 
 async def llm_choose_action(current_html: str, history: List[str], user_task: str) -> str:
     """
@@ -169,112 +137,126 @@ async def llm_choose_action(current_html: str, history: List[str], user_task: st
         return "FINISH"
 
 
-async def search_for_start_url(user_task: str) -> str:
+async def perform_search_get_urls(user_task: str) -> List[str]:
     """
-    Uses apify/rag-web-browser to search key terms and find a good starting URL.
-    Returns the URL of the first organic result.
+    Uses apify/rag-web-browser to search and returns the top 3 result URLs.
     """
-    Actor.log.info(f"Searching for starting URL for task: {user_task}")
-    
-    # Construct a search query that explicitly asks for the code location
+    Actor.log.info(f"Searching for task: {user_task}")
     search_query = f"{user_task} building code official site"
     
     try:
-        # Call apify/rag-web-browser
         run = await Actor.call(
             "apify/rag-web-browser",
             run_input={
                 "query": search_query,
-                "maxResults": 1,
-            }
+                "maxResults": 3,
+            },
+            memory_mbytes=2048,
         )
         
-        # Get the default dataset items
-        if run:
-            dataset_id = run.get("defaultDatasetId")
-            if dataset_id:
-                items = await Actor.apify_client.dataset(dataset_id).list_items()
-                if items.items:
-                    first_result = items.items[0]
-                    start_url = first_result.get("metadata", {}).get("url")
-                    if start_url:
-                        Actor.log.info(f"Found starting URL: {start_url}")
-                        return start_url
-        
-        Actor.log.warning("No URL found via search. Defaulting to Google.")
-        return "https://www.google.com/search?q=" + user_task.replace(" ", "+")
-        
+        if not run: return []
+        dataset_id = run.default_dataset_id
+        if not dataset_id: return []
+
+        items = await Actor.apify_client.dataset(dataset_id).list_items()
+        urls = []
+        for item in items.items:
+            # rag-web-browser output format varies. Sometimes metadata.url, sometimes url.
+            # but usually it actually navigates. Wait, rag-web-browser without markdown
+            # just returns results if we ask it to? 
+            # Actually, standard rag-web-browser usage scrapes content.
+            # If we just want URLs, we might fish from metadata.
+            url = item.get("metadata", {}).get("url")
+            if url: urls.append(url)
+            
+        return urls
     except Exception as e:
-        Actor.log.error(f"Search failed: {e}. Defaulting to Google.")
-        return "https://www.google.com/search?q=" + user_task.replace(" ", "+")
+        Actor.log.error(f"Search failed: {e}")
+        return []
 
-async def research_agent_get_html(user_task: str, max_steps: int = 10) -> Tuple[str, bytes]:
+async def run_single_agent_tab(url: str, user_task: str, max_steps: int = 15) -> str:
     """
-    Agentic loop:
-    1. Search for a good starting point.
-    2. Lets the LLM decide actions to navigate/extract.
-    3. Returns the final extracted HTML and screenshot.
+    Spawns a new page, navigates to the start URL, and runs the ReAct agent loop.
+    Returns the extracted Markdown/HTML content.
     """
-    scraper = WebScraperActor()
-    
-    # Dynamic start URL based on search
-    start_url = await search_for_start_url(user_task)
-
-    # initial page
-    html = await scraper.goto(start_url)
-    history: List[str] = []
-
+    Actor.log.info(f"Starting agent tab for URL: {url}")
+    page = None
+    context = None
     try:
-        for step in range(1, max_steps + 1):
-            Actor.log.info(f"=== STEP {step} ===")
+        page, context = await WebScraperActor.new_page()
+        
+        # Initial navigation
+        try:
+            await page.goto(url, wait_until="load", timeout=60000)
+            await page.wait_for_timeout(2000)
+        except Exception as e:
+            Actor.log.error(f"Failed to load start URL {url}: {e}")
+            return ""
 
+        history: List[str] = []
+        html = await page.content()
+
+        for step in range(1, max_steps + 1):
+             # Decide action
             action = await llm_choose_action(html, history, user_task)
             history.append(action)
-            Actor.log.info(f"Agent action: {action}")
-
+            Actor.log.info(f"[{url}] Agent Step {step} Action: {action}")
+            
             upper = action.upper().strip()
 
             if upper.startswith("NAVIGATE "):
                 raw_url = action[len("NAVIGATE "):].strip()
-                if not raw_url.startswith("http"):
-                    # Attempt to handle relative paths blindly if we know the base, 
-                    # but pure relative handling is hard without current URL context.
-                    # For now, we assume the LLM sees the links and provides full or resolvable URLs.
-                    # If it's a root relative path:
-                    if raw_url.startswith("/") and scraper.page:
-                        # naive reconstruct
-                        base = "/".join(scraper.page.url.split("/")[:3]) # https://host
-                        raw_url = base + raw_url
+                # Relative URL handling
+                if not raw_url.startswith("http") and not raw_url.startswith("www"):
+                     if raw_url.startswith("/"):
+                         # simplistic join
+                         base = "/".join(page.url.split("/")[:3])
+                         raw_url = base + raw_url
+                     else:
+                         current_dir = "/".join(page.url.split("/")[:-1])
+                         raw_url = current_dir + "/" + raw_url
                 
-                Actor.log.info(f"Navigating to: {raw_url}")
-                html = await scraper.goto(raw_url)
+                try:
+                    await page.goto(raw_url, wait_until="load", timeout=30000)
+                    await page.wait_for_timeout(1000)
+                    html = await page.content()
+                except Exception as e:
+                    Actor.log.warning(f"[{url}] Nav failed: {e}")
                 continue
 
             if upper.startswith("CLICK "):
                 selector = action[len("CLICK "):].strip()
-                Actor.log.info(f"Clicking selector: {selector}")
-                html = await scraper.click(selector)
+                try:
+                    await page.click(selector, timeout=5000)
+                    await page.wait_for_timeout(1000)
+                    html = await page.content()
+                except Exception as e:
+                    Actor.log.warning(f"[{url}] Click failed: {e}")
                 continue
 
             if "EXTRACT" in upper:
-                Actor.log.info("Extracting current page HTML and screenshot...")
-                html = await scraper.extract_html()
-                screenshot_bytes = await scraper.screenshot_bytes()
-                return html, screenshot_bytes
+                Actor.log.info(f"[{url}] EXTRACT issued. Capturing content.")
+                # We could try to convert to markdown here if we want, or just return HTML.
+                # For consistency with parallel search, let's keep HTML for now and let summarizer handle it? 
+                # Actually, the new summarizer expects Markdown-ish content.
+                # Let's return the HTML; the summarizer handles HTML snippet or Markdown.
+                return f"--- START SOURCE: {page.url} ---\n{html}\n--- END SOURCE ---\n"
 
             if "FINISH" in upper:
-                Actor.log.info("Agent indicated FINISH. Returning current HTML and a blank screenshot.")
-                return html, b''
+                Actor.log.info(f"[{url}] FINISH issued.")
+                # Return what we have currently
+                return f"--- START SOURCE: {page.url} ---\n{html}\n--- END SOURCE ---\n"
 
-            # Fallback: unknown action
-            Actor.log.warning("Unknown action or FINISH. Returning current HTML.")
-            return html, b''
+        # Max steps
+        Actor.log.warning(f"[{url}] Max steps reached.")
+        return f"--- START SOURCE: {page.url} ---\n{html}\n--- END SOURCE ---\n"
 
-        Actor.log.warning("Max steps reached. Returning current HTML.")
-        return html, b''
-
+    except Exception as e:
+        Actor.log.error(f"[{url}] Agent tab crashed: {e}")
+        return ""
     finally:
-        await scraper.close()
+        if page: await page.close()
+        if context: await context.close()
 
 def summarize_requirements(html: str, user_task: str) -> BuildingCodeReport:
     """
@@ -286,28 +268,28 @@ def summarize_requirements(html: str, user_task: str) -> BuildingCodeReport:
     system_prompt = """
 You are an expert in building codes and zoning regulations.
 
-You will be given:
-- The user's task (e.g. "Find parking requirements for an ADU in Los Angeles").
-- The HTML of a relevant building code page.
+    You will be given:
+    - The user's task (e.g. "Find parking requirements for an ADU in Los Angeles").
+    - The Markdown content of multiple relevant building code pages (concatenated).
 
-Your job:
-- Identify the key code requirements relevant to the task.
-- Summarise the requirements in clear, non-legal language.
-- Extract generic code references (Section, Chapter, Table numbers).
-
-You MUST:
-- Fill the BuildingCodeReport schema.
-- Provide concise requirement statements.
-- List any important assumptions (e.g. jurisdiction, year of code).
-"""
+    Your job:
+    - Identify the key code requirements relevant to the task.
+    - Summarise the requirements in clear, non-legal language.
+    - Extract generic code references (Section, Chapter, Table numbers) and Source URLs.
+    
+    You MUST:
+    - Fill the BuildingCodeReport schema.
+    - Provide concise requirement statements.
+    - List any important assumptions (e.g. jurisdiction, year of code).
+    """
 
     user_prompt = f"""
-User task:
-{user_task}
-
-HTML Content (truncated):
-\"\"\"{html_snippet}\"\"\"
-"""
+    User task:
+    {user_task}
+    
+    Content (Markdown):
+    \"\"\"{html_snippet}\"\"\"
+    """
     
     from apify import Configuration
     token = Configuration.get_global_configuration().token
@@ -342,9 +324,43 @@ HTML Content (truncated):
 async def run_research_agent(user_task: str, max_steps: int = 15) -> BuildingCodeReport:
     """
     High-level entry:
-    1) Run the research agent (Search -> Navigate -> Extract).
-    2) Summarise extracted HTML into a BuildingCodeReport.
+    1) Search to get candidate URLs.
+    2) Run multiple agent tabs in parallel to navigate/extract.
+    3) Summarise aggregated content.
     """
-    html, screenshot_data = await research_agent_get_html(user_task=user_task, max_steps=max_steps)
-    report = summarize_requirements(html, user_task)
+    # 1. Search (fast)
+    urls = await perform_search_get_urls(user_task)
+    if not urls:
+         # Fallback search if Rag fails?
+         urls = ["https://www.google.com/search?q=" + user_task.replace(" ", "+")]
+
+    # Limit to top 3 to avoid overloading browser memory
+    urls = urls[:3]
+    Actor.log.info(f"Parallel Agents launching for: {urls}")
+
+    # 2. Run Parallel Agents
+    tasks = [run_single_agent_tab(url, user_task, max_steps) for url in urls]
+    results = await asyncio.gather(*tasks)
+    
+    # Filter empty results
+    valid_results = [r for r in results if r]
+    aggregated_markdown = "\n\n".join(valid_results)
+
+    if not aggregated_markdown:
+        Actor.log.warning("All parallel agents failed to retrieve content.")
+        return BuildingCodeReport(
+            task=user_task,
+            jurisdiction="Unknown",
+            code_source="All Agents Failed",
+            assumptions=["Could not retrieve content via parallel deep agents."],
+            requirements=[]
+        )
+
+    # 3. Summarize
+    Actor.log.info("Aggregated content retrieved. Summarizing...")
+    report = summarize_requirements(aggregated_markdown, user_task)
+    
+    # Cleanup browser
+    await WebScraperActor.close()
+    
     return report
