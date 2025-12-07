@@ -1,9 +1,15 @@
 import json
 import os
 from typing import Any, Dict, List
+from io import BytesIO
 
 import requests
 import streamlit as st
+from PyPDF2 import PdfReader
+try:
+    from docx import Document
+except ImportError:
+    Document = None
 
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
@@ -49,11 +55,85 @@ st.markdown(
 st.title("🏗️ Building Compliance Consultant")
 st.caption("NCC/BCA DTS Assessment · Code Retrieval · Evidence Gathering · Compliance Reporting")
 
-# Sidebar for project details
+# File upload utility functions
+def extract_text_from_pdf(pdf_file) -> str:
+    """Extract text from uploaded PDF file"""
+    try:
+        pdf_reader = PdfReader(BytesIO(pdf_file.read()))
+        text = ""
+        for page_num, page in enumerate(pdf_reader.pages):
+            text += f"\n--- Page {page_num + 1} ---\n"
+            text += page.extract_text()
+        return text
+    except Exception as e:
+        return f"Error extracting PDF: {str(e)}"
+
+def extract_text_from_docx(docx_file) -> str:
+    """Extract text from uploaded DOCX file"""
+    if Document is None:
+        return "Error: python-docx not installed"
+    try:
+        doc = Document(BytesIO(docx_file.read()))
+        text = ""
+        for para_num, para in enumerate(doc.paragraphs):
+            if para.text.strip():
+                text += para.text + "\n"
+        return text
+    except Exception as e:
+        return f"Error extracting DOCX: {str(e)}"
+
+def extract_text_from_txt(txt_file) -> str:
+    """Extract text from uploaded TXT file"""
+    try:
+        return txt_file.read().decode('utf-8')
+    except Exception as e:
+        return f"Error extracting TXT: {str(e)}"
+
+# Sidebar for project details and file upload
 with st.sidebar:
     st.header("🔧 Configuration")
     api_base = st.text_input("API base", value=API_BASE, help="Backend FastAPI base URL")
     health_status = st.empty()
+    
+    st.header("📤 Upload Documents")
+    st.caption("Upload building documentation (PDF, DOCX, or TXT)")
+    
+    uploaded_files = st.file_uploader(
+        "Upload building plans, specs, or reports",
+        type=['pdf', 'docx', 'txt'],
+        accept_multiple_files=True,
+        help="Upload project documentation to automatically extract design details"
+    )
+    
+    extracted_text = ""
+    if uploaded_files:
+        st.success(f"✅ {len(uploaded_files)} file(s) uploaded")
+        
+        with st.expander("📄 View Extracted Text", expanded=False):
+            for uploaded_file in uploaded_files:
+                st.markdown(f"**{uploaded_file.name}**")
+                
+                if uploaded_file.name.lower().endswith('.pdf'):
+                    file_text = extract_text_from_pdf(uploaded_file)
+                elif uploaded_file.name.lower().endswith('.docx'):
+                    file_text = extract_text_from_docx(uploaded_file)
+                elif uploaded_file.name.lower().endswith('.txt'):
+                    file_text = extract_text_from_txt(uploaded_file)
+                else:
+                    file_text = "Unsupported file type"
+                
+                extracted_text += f"\n\n=== {uploaded_file.name} ===\n{file_text}\n"
+                st.text_area(
+                    f"Content from {uploaded_file.name}",
+                    file_text[:500] + "..." if len(file_text) > 500 else file_text,
+                    height=150,
+                    disabled=True,
+                    key=f"preview_{uploaded_file.name}"
+                )
+        
+        if st.button("📋 Auto-fill from Uploaded Files"):
+            st.session_state['auto_fill_text'] = extracted_text
+            st.success("Text extracted! Scroll down to review and submit.")
     
     st.header("📋 Project Classification")
     building_class = st.selectbox(
@@ -72,16 +152,26 @@ with st.sidebar:
 col_input, col_meta = st.columns([2, 1])
 
 with col_input:
+    # Check if auto-fill text is available
+    default_text = st.session_state.get('auto_fill_text', '')
+    
     project_description = st.text_area(
         "Project Description",
-        placeholder="e.g., 3-storey residential apartment building, Type A construction, Victoria. 12 units across 3 levels with basement parking. Total floor area 1,200m². Accessible entrance via ramp from street level.",
-        height=150,
-        help="Comprehensive project description including size, location, construction type, key features"
+        value=default_text,
+        placeholder="e.g., 3-storey residential apartment building, Type A construction, Victoria. 12 units across 3 levels with basement parking. Total floor area 1,200m². Accessible entrance via ramp from street level.\n\nOr upload documents using the sidebar and click 'Auto-fill from Uploaded Files'.",
+        height=200,
+        help="Comprehensive project description including size, location, construction type, key features. Or upload PDF/DOCX files in the sidebar."
     )
+    
+    # Clear auto-fill after use
+    if default_text and project_description == default_text:
+        if st.button("🗑️ Clear Auto-filled Text"):
+            st.session_state['auto_fill_text'] = ''
+            st.rerun()
     
     design_details = st.text_area(
         "Design Details (Optional)",
-        placeholder="e.g., Fire-rated walls: 90/90/90. Exit stairways: 1000mm width. Accessible toilets on ground floor. Drawing references: DA-01 to DA-15.",
+        placeholder="e.g., Fire-rated walls: 90/90/90. Exit stairways: 1000mm width. Accessible toilets on ground floor. Drawing references: DA-01 to DA-15.\n\nThis field auto-populates from uploaded documents.",
         height=100,
         help="Specific design specifications, drawing references, or technical details"
     )
@@ -93,7 +183,10 @@ with col_input:
     )
 
 with col_meta:
-    st.info("**Quick Tips:**\n- Provide complete project description\n- Specify building class accurately\n- Include key dimensions if known\n- Reference drawings if available")
+    st.info("**Quick Tips:**\n- Upload PDF/DOCX files in sidebar for auto-extraction\n- Or manually enter project details\n- Specify building class accurately\n- Include key dimensions if known\n- Reference drawings if available")
+    
+    st.markdown("**📁 Supported File Types:**")
+    st.markdown("- PDF (.pdf)\n- Word (.docx)\n- Text (.txt)")
     
     assess_btn = st.button("🔍 Assess Compliance", type="primary", use_container_width=True)
 
@@ -120,6 +213,35 @@ if api_base:
 def call_compliance_api(api_base: str, request_data: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{api_base.rstrip('/')}/assess-compliance"
     r = requests.post(url, json=request_data, timeout=300)  # Longer timeout for compliance assessment
+    r.raise_for_status()
+    return r.json()
+
+
+def call_compliance_api_with_files(api_base: str, building_class: str, assessment_scope: str, 
+                                    project_description: str, design_details: Optional[str], 
+                                    specific_concerns: Optional[str], uploaded_files: List) -> Dict[str, Any]:
+    """Call the file upload endpoint with multipart form data"""
+    url = f"{api_base.rstrip('/')}/assess-compliance-with-files"
+    
+    # Prepare form data
+    data = {
+        "building_class": building_class,
+        "assessment_scope": assessment_scope,
+        "project_description": project_description if project_description else "",
+        "design_details": design_details if design_details else "",
+        "specific_concerns": specific_concerns if specific_concerns else ""
+    }
+    
+    # Prepare files
+    files_payload = []
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            uploaded_file.seek(0)  # Reset file pointer
+            files_payload.append(
+                ("files", (uploaded_file.name, uploaded_file.read(), uploaded_file.type))
+            )
+    
+    r = requests.post(url, data=data, files=files_payload if files_payload else None, timeout=300)
     r.raise_for_status()
     return r.json()
 
@@ -197,15 +319,28 @@ if assess_btn and project_description.strip():
         status_placeholder.info("🔄 Conducting compliance assessment... This may take 1-2 minutes.", icon="⏳")
         
         try:
-            request_data = {
-                "project_description": project_description.strip(),
-                "building_class": building_class,
-                "assessment_scope": assessment_scope.strip(),
-                "design_details": design_details.strip() if design_details else None,
-                "specific_concerns": specific_concerns.strip() if specific_concerns else None
-            }
+            # Use file upload endpoint if files were uploaded
+            if uploaded_files:
+                result = call_compliance_api_with_files(
+                    api_base, 
+                    building_class, 
+                    assessment_scope,
+                    project_description,
+                    design_details,
+                    specific_concerns,
+                    uploaded_files
+                )
+            else:
+                # Use standard JSON endpoint
+                request_data = {
+                    "project_description": project_description.strip(),
+                    "building_class": building_class,
+                    "assessment_scope": assessment_scope.strip(),
+                    "design_details": design_details.strip() if design_details else None,
+                    "specific_concerns": specific_concerns.strip() if specific_concerns else None
+                }
+                result = call_compliance_api(api_base, request_data)
             
-            result = call_compliance_api(api_base, request_data)
             success = result.get("success", False)
             final_response = result.get("final_response", "")
             trace = result.get("execution_trace", [])

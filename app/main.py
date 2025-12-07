@@ -1,13 +1,25 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, List, Optional
 import logging
+from io import BytesIO
 
 from app.agent.core import initialize_agent, get_agent
 from app.models.schemas import (
     ResearchRequest, ResearchResponse,
     ComplianceRequest, ComplianceResponse, ComplianceSummary
 )
+
+# PDF and DOCX processing
+try:
+    from PyPDF2 import PdfReader
+except ImportError:
+    PdfReader = None
+
+try:
+    from docx import Document as DocxDocument
+except ImportError:
+    DocxDocument = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -160,6 +172,73 @@ Provide your final assessment summary clearly noting overall compliance status, 
         
     except Exception as e:
         logger.error(f"Compliance assessment error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/assess-compliance-with-files")
+async def assess_compliance_with_files(
+    building_class: str = Form(...),
+    assessment_scope: str = Form(...),
+    project_description: Optional[str] = Form(None),
+    design_details: Optional[str] = Form(None),
+    specific_concerns: Optional[str] = Form(None),
+    files: List[UploadFile] = File(None)
+):
+    """
+    Assess compliance with optional file uploads (PDF, DOCX, TXT)
+    Extracts text from uploaded files and combines with manual input
+    """
+    try:
+        extracted_texts = []
+        
+        if files:
+            for uploaded_file in files:
+                file_content = await uploaded_file.read()
+                filename = uploaded_file.filename.lower()
+                
+                try:
+                    if filename.endswith('.pdf') and PdfReader:
+                        pdf_reader = PdfReader(BytesIO(file_content))
+                        text = ""
+                        for page in pdf_reader.pages:
+                            text += page.extract_text() + "\n"
+                        extracted_texts.append(f"=== {uploaded_file.filename} ===\n{text}")
+                    
+                    elif filename.endswith('.docx') and DocxDocument:
+                        doc = DocxDocument(BytesIO(file_content))
+                        text = "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
+                        extracted_texts.append(f"=== {uploaded_file.filename} ===\n{text}")
+                    
+                    elif filename.endswith('.txt'):
+                        text = file_content.decode('utf-8')
+                        extracted_texts.append(f"=== {uploaded_file.filename} ===\n{text}")
+                    
+                    else:
+                        logger.warning(f"Unsupported file type: {uploaded_file.filename}")
+                
+                except Exception as e:
+                    logger.error(f"Error processing file {uploaded_file.filename}: {e}")
+        
+        # Combine extracted text with manual input
+        combined_description = project_description or ""
+        if extracted_texts:
+            combined_description += "\n\n" + "\n\n".join(extracted_texts)
+        
+        combined_details = design_details or ""
+        
+        # Create compliance request
+        compliance_request = ComplianceRequest(
+            project_description=combined_description,
+            building_class=building_class,
+            assessment_scope=assessment_scope,
+            design_details=combined_details if combined_details else None,
+            specific_concerns=specific_concerns
+        )
+        
+        # Use the standard compliance endpoint logic
+        return await assess_compliance(compliance_request)
+    
+    except Exception as e:
+        logger.error(f"File upload compliance assessment error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # Legacy research endpoint (maintained for backward compatibility)

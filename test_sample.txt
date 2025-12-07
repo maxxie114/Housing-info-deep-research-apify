@@ -1,0 +1,38 @@
+BUILDING PROJECT SPECIFICATION
+
+Project: Residential Apartment Building
+Location: Melbourne, Victoria, Australia
+Building Class: Class 2 (Multi-unit residential)
+
+DESCRIPTION:
+This is a 3-storey apartment building with 12 residential units distributed across 3 levels. The building includes basement parking for 15 vehicles.
+
+CONSTRUCTION TYPE:
+Type A construction as per NCC requirements.
+
+FLOOR AREA:
+Total floor area: 1,200 m²
+Ground floor: 400 m²
+First floor: 400 m²
+Second floor: 400 m²
+
+ACCESSIBILITY:
+- Accessible entrance via ramp from street level (gradient 1:14)
+- Ground floor accessible toilet facilities
+- Lift access to all levels (1200mm x 1400mm car size)
+
+FIRE SAFETY:
+- Fire-rated walls: 90/90/90 FRL
+- Exit stairways: 2 x 1000mm width
+- Automatic fire detection and alarm system throughout
+- Fire hydrant system installed
+
+SPECIFIC CONCERNS:
+We need to verify compliance with:
+1. Stairway width and dimensions
+2. Fire door FRL ratings for exits
+3. Accessibility requirements for Class 2 buildings
+4. Basement ventilation and fire safety
+
+DRAWINGS:
+Reference drawings: DA-01 to DA-15

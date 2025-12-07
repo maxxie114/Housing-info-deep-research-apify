@@ -19,6 +19,40 @@ This intelligent agent assists building professionals by automating the tedious 
 - ⚡ **Performance Solution Flagging** - Identify when Performance Solutions may be required
 - 🔄 **Complete Audit Trail** - Full execution trace for documentation purposes
 - 🚀 **RESTful API with FastAPI** - Integration-ready architecture
+- 📁 **File Upload Support** - Upload PDF, DOCX, or TXT building documentation for automatic text extraction
+
+## 📄 File Upload Capability
+
+The application supports uploading building documentation files instead of manual text entry:
+
+### Supported File Types
+- **PDF** (.pdf) - Building plans, specifications, compliance reports
+- **Word Documents** (.docx) - Specifications, assessment documentation
+- **Text Files** (.txt) - Plain text building information
+
+### How to Use File Upload
+
+**1. Via Streamlit Web UI:**
+- Navigate to the sidebar "📁 Upload Building Documentation"
+- Click "Browse files" and select one or multiple files
+- Preview extracted text from each file
+- Click "📋 Auto-fill from Uploaded Files" to populate the project description
+- Specify Building Class and Assessment Scope
+- Click "🔍 Assess Compliance" to run the analysis
+
+**2. Via API Endpoint:**
+```bash
+curl -X POST http://localhost:8000/assess-compliance-with-files \
+  -F "building_class=Class 2" \
+  -F "assessment_scope=Fire safety and accessibility" \
+  -F "files=@/path/to/building_spec.pdf" \
+  -F "files=@/path/to/drawings.docx"
+```
+
+**3. Hybrid Approach:**
+- Upload files for automatic extraction
+- Manually add additional context in text fields
+- Both sources are combined for comprehensive assessment
 
 ## 👥 Intended Users
 
